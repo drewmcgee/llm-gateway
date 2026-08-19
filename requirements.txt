@@ -1,5 +1,6 @@
 fastapi
 httpx
 uvicorn
+aiosqlite
 pytest
 pytest-asyncio

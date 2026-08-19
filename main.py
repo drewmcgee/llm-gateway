@@ -1,16 +1,21 @@
 import os
 import time
 from contextlib import asynccontextmanager
+from functools import partial
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
 import httpx
+
+import db as db_module
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.client = httpx.AsyncClient(
         timeout=httpx.Timeout(300.0, connect=10.0))
+    app.state.db = await db_module.connect()
     yield
+    await app.state.db.close()
     await app.state.client.aclose()
 
 
@@ -23,8 +28,29 @@ STRIP_RESP = {"content-length", "connection", "transfer-encoding",
               "keep-alive", "upgrade", "content-encoding"}
 
 
-def log_request(status_code, body, ttfb_ms, total_ms):
+async def log_request(status_code, body, ttfb_ms, total_ms):
     print(f"[LOG] {status_code} ttfb={ttfb_ms:.0f}ms total={total_ms:.0f}ms")
+
+
+def redact_headers(headers):
+    return {k: ("REDACTED" if k.lower() == "authorization" else v)
+            for k, v in headers.items()}
+
+
+async def persist_log(status_code, body, ttfb_ms, total_ms, *, db, method,
+                       url, request_headers, request_body, response_headers):
+    await db_module.insert_log(
+        db,
+        method=method,
+        url=url,
+        request_headers=redact_headers(request_headers),
+        request_body=request_body,
+        status_code=status_code,
+        response_headers=response_headers,
+        response_body=body,
+        ttfb_ms=ttfb_ms,
+        total_ms=total_ms,
+    )
 
 
 async def body_iterator(upstream, start, ttfb_ms, on_complete=log_request):
@@ -36,7 +62,7 @@ async def body_iterator(upstream, start, ttfb_ms, on_complete=log_request):
     finally:
         await upstream.aclose()
         total_ms = (time.perf_counter() - start) * 1000
-        on_complete(upstream.status_code, b"".join(chunks), ttfb_ms, total_ms)
+        await on_complete(upstream.status_code, b"".join(chunks), ttfb_ms, total_ms)
 
 
 @app.post("/v1/{path:path}")
@@ -60,6 +86,16 @@ async def proxy(path: str, request: Request):
 
     response_headers = {
         k: v for k, v in upstream.headers.items() if k.lower() not in STRIP_RESP}
-    return StreamingResponse(body_iterator(upstream, start, ttfb_ms), status_code=upstream.status_code,
+
+    on_complete = partial(
+        persist_log,
+        db=request.app.state.db,
+        method=request.method,
+        url=str(request.url),
+        request_headers=dict(request.headers),
+        request_body=body,
+        response_headers=dict(upstream.headers),
+    )
+    return StreamingResponse(body_iterator(upstream, start, ttfb_ms, on_complete), status_code=upstream.status_code,
                              headers=response_headers,
                              media_type=upstream.headers.get("content-type"))

@@ -33,7 +33,7 @@ async def test_aggregates_chunks_into_full_body_on_complete():
     upstream = FakeUpstream([b'{"foo": ', b'"bar"}'], status_code=200)
     captured = {}
 
-    def on_complete(status_code, body, ttfb_ms, total_ms):
+    async def on_complete(status_code, body, ttfb_ms, total_ms):
         captured["status_code"] = status_code
         captured["body"] = body
 
@@ -49,7 +49,7 @@ async def test_empty_stream_aggregates_to_empty_body():
     upstream = FakeUpstream([])
     captured = {}
 
-    def on_complete(status_code, body, ttfb_ms, total_ms):
+    async def on_complete(status_code, body, ttfb_ms, total_ms):
         captured["body"] = body
 
     async for _ in body_iterator(upstream, time.perf_counter(), 0, on_complete):
@@ -79,7 +79,7 @@ async def test_on_complete_called_even_when_upstream_iteration_raises():
     upstream = BoomUpstream([])
     captured = {}
 
-    def on_complete(status_code, body, ttfb_ms, total_ms):
+    async def on_complete(status_code, body, ttfb_ms, total_ms):
         captured["body"] = body
 
     with pytest.raises(ConnectionError):

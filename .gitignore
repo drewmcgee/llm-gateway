@@ -1,1 +1,6 @@
 __pycache__/
+.venv/
+.pytest_cache/
+logs.db
+logs.db-wal
+logs.db-shm
