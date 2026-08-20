@@ -166,6 +166,53 @@ async def test_get_log_returns_full_detail(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_list_logs_includes_model_and_token_fields(tmp_path):
+    conn = await db.connect(tmp_path / "logs.db")
+    try:
+        await insert_sample_log(
+            conn, model="gpt-5-mini", prompt_tokens=10,
+            completion_tokens=20, total_tokens=30)
+        rows = await db.list_logs(conn)
+    finally:
+        await conn.close()
+
+    assert rows[0]["model"] == "gpt-5-mini"
+    assert rows[0]["prompt_tokens"] == 10
+    assert rows[0]["completion_tokens"] == 20
+    assert rows[0]["total_tokens"] == 30
+
+
+@pytest.mark.asyncio
+async def test_get_log_includes_model_and_token_fields(tmp_path):
+    conn = await db.connect(tmp_path / "logs.db")
+    try:
+        log_id = await insert_sample_log(
+            conn, model="gpt-5-mini", prompt_tokens=10,
+            completion_tokens=20, total_tokens=30)
+        row = await db.get_log(conn, log_id)
+    finally:
+        await conn.close()
+
+    assert row["model"] == "gpt-5-mini"
+    assert row["prompt_tokens"] == 10
+    assert row["completion_tokens"] == 20
+    assert row["total_tokens"] == 30
+
+
+@pytest.mark.asyncio
+async def test_model_and_tokens_default_to_none(tmp_path):
+    conn = await db.connect(tmp_path / "logs.db")
+    try:
+        log_id = await insert_sample_log(conn)
+        row = await db.get_log(conn, log_id)
+    finally:
+        await conn.close()
+
+    assert row["model"] is None
+    assert row["total_tokens"] is None
+
+
+@pytest.mark.asyncio
 async def test_get_log_returns_none_for_unknown_id(tmp_path):
     conn = await db.connect(tmp_path / "logs.db")
     try:

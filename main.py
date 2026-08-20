@@ -52,6 +52,31 @@ def redact_headers(headers):
             for k, v in headers.items()}
 
 
+def extract_model(request_body):
+    if not request_body:
+        return None
+    try:
+        return json.loads(request_body).get("model")
+    except ValueError:
+        return None
+
+
+def extract_usage(response_body):
+    if not response_body:
+        return None
+    try:
+        usage = json.loads(response_body).get("usage")
+    except ValueError:
+        return None
+    if not usage:
+        return None
+    return {
+        "prompt_tokens": usage.get("prompt_tokens"),
+        "completion_tokens": usage.get("completion_tokens"),
+        "total_tokens": usage.get("total_tokens"),
+    }
+
+
 async def require_api_key(request: Request, x_api_key: str | None = Header(None, alias="X-API-Key")):
     if not x_api_key:
         raise HTTPException(status_code=401, detail="missing X-API-Key header")
@@ -66,6 +91,8 @@ async def persist_log(status_code, body, ttfb_ms, total_ms, *, db, method,
                        url, request_headers, request_body, response_headers,
                        api_key_label=None, broadcaster=None):
     created_at = datetime.now(timezone.utc).isoformat()
+    model = extract_model(request_body)
+    usage = extract_usage(body) or {}
     log_id = await db_module.insert_log(
         db,
         created_at=created_at,
@@ -79,6 +106,10 @@ async def persist_log(status_code, body, ttfb_ms, total_ms, *, db, method,
         ttfb_ms=ttfb_ms,
         total_ms=total_ms,
         api_key_label=api_key_label,
+        model=model,
+        prompt_tokens=usage.get("prompt_tokens"),
+        completion_tokens=usage.get("completion_tokens"),
+        total_tokens=usage.get("total_tokens"),
     )
     if broadcaster is not None:
         broadcaster.publish({
@@ -90,6 +121,10 @@ async def persist_log(status_code, body, ttfb_ms, total_ms, *, db, method,
             "ttfb_ms": ttfb_ms,
             "total_ms": total_ms,
             "api_key_label": api_key_label,
+            "model": model,
+            "prompt_tokens": usage.get("prompt_tokens"),
+            "completion_tokens": usage.get("completion_tokens"),
+            "total_tokens": usage.get("total_tokens"),
         })
 
 

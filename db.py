@@ -19,7 +19,11 @@ CREATE TABLE IF NOT EXISTS logs (
     response_body BLOB,
     ttfb_ms REAL NOT NULL,
     total_ms REAL NOT NULL,
-    api_key_label TEXT
+    api_key_label TEXT,
+    model TEXT,
+    prompt_tokens INTEGER,
+    completion_tokens INTEGER,
+    total_tokens INTEGER
 )
 """
 
@@ -44,13 +48,15 @@ async def connect(path=DB_PATH):
 
 async def insert_log(db, *, created_at, method, url, request_headers, request_body,
                       status_code, response_headers, response_body,
-                      ttfb_ms, total_ms, api_key_label=None):
+                      ttfb_ms, total_ms, api_key_label=None, model=None,
+                      prompt_tokens=None, completion_tokens=None, total_tokens=None):
     cursor = await db.execute(
         """INSERT INTO logs
            (created_at, method, url, request_headers, request_body,
             status_code, response_headers, response_body,
-            ttfb_ms, total_ms, api_key_label)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ttfb_ms, total_ms, api_key_label,
+            model, prompt_tokens, completion_tokens, total_tokens)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             created_at,
             method,
@@ -63,6 +69,10 @@ async def insert_log(db, *, created_at, method, url, request_headers, request_bo
             ttfb_ms,
             total_ms,
             api_key_label,
+            model,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
         ),
     )
     await db.commit()
@@ -70,7 +80,8 @@ async def insert_log(db, *, created_at, method, url, request_headers, request_bo
 
 
 LOG_SUMMARY_COLUMNS = ("id", "created_at", "method", "url", "status_code",
-                       "ttfb_ms", "total_ms", "api_key_label")
+                       "ttfb_ms", "total_ms", "api_key_label", "model",
+                       "prompt_tokens", "completion_tokens", "total_tokens")
 
 
 def _row_to_summary(row):
@@ -105,7 +116,8 @@ async def get_log(db, log_id):
     cursor = await db.execute(
         """SELECT id, created_at, method, url, request_headers, request_body,
                   status_code, response_headers, response_body,
-                  ttfb_ms, total_ms, api_key_label
+                  ttfb_ms, total_ms, api_key_label,
+                  model, prompt_tokens, completion_tokens, total_tokens
            FROM logs WHERE id = ?""",
         (log_id,),
     )
@@ -114,7 +126,7 @@ async def get_log(db, log_id):
         return None
     (log_id, created_at, method, url, request_headers, request_body,
      status_code, response_headers, response_body, ttfb_ms, total_ms,
-     api_key_label) = row
+     api_key_label, model, prompt_tokens, completion_tokens, total_tokens) = row
     return {
         "id": log_id,
         "created_at": created_at,
@@ -128,6 +140,10 @@ async def get_log(db, log_id):
         "ttfb_ms": ttfb_ms,
         "total_ms": total_ms,
         "api_key_label": api_key_label,
+        "model": model,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
     }
 
 
