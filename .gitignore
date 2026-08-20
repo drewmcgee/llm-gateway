@@ -4,3 +4,5 @@ __pycache__/
 logs.db
 logs.db-wal
 logs.db-shm
+.env
+dashboard/node_modules/

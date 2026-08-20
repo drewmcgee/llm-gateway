@@ -8,9 +8,12 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import httpx
+from dotenv import load_dotenv
 
 import db as db_module
 from broadcast import Broadcaster
+
+load_dotenv()
 
 
 @asynccontextmanager

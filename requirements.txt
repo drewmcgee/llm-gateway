@@ -2,5 +2,6 @@ fastapi
 httpx
 uvicorn
 aiosqlite
+python-dotenv
 pytest
 pytest-asyncio
