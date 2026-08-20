@@ -232,10 +232,10 @@ async def proxy(path: str, request: Request, api_key_label: str = Depends(requir
 @app.get("/logs")
 async def list_logs(request: Request, method: str | None = None,
                      status_code: int | None = None, url_contains: str | None = None,
-                     limit: int = 200):
+                     before_id: int | None = None, limit: int = 200):
     return await db_module.list_logs(
         request.app.state.db, method=method, status_code=status_code,
-        url_contains=url_contains, limit=limit)
+        url_contains=url_contains, before_id=before_id, limit=limit)
 
 
 def format_sse_event(data):

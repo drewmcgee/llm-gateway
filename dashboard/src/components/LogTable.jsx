@@ -4,7 +4,7 @@ function statusClass(status) {
   return "status-ok"
 }
 
-export default function LogTable({ logs, selectedId, onSelect }) {
+export default function LogTable({ logs, selectedId, onSelect, hasMore, onLoadOlder }) {
   if (logs.length === 0) {
     return (
       <div className="empty-state">
@@ -52,6 +52,13 @@ export default function LogTable({ logs, selectedId, onSelect }) {
               <td>{new Date(log.created_at).toLocaleTimeString()}</td>
             </tr>
           ))}
+          {hasMore && (
+            <tr className="load-older-row">
+              <td colSpan={6}>
+                <button onClick={onLoadOlder}>Load older requests</button>
+              </td>
+            </tr>
+          )}
         </tbody>
       </table>
     </div>

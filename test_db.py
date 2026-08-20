@@ -139,6 +139,34 @@ async def test_list_logs_filters_by_url_substring(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_list_logs_before_id_returns_older_rows_only(tmp_path):
+    conn = await db.connect(tmp_path / "logs.db")
+    try:
+        id1 = await insert_sample_log(conn, url="http://x/v1/a")
+        id2 = await insert_sample_log(conn, url="http://x/v1/b")
+        id3 = await insert_sample_log(conn, url="http://x/v1/c")
+        page = await db.list_logs(conn, before_id=id3)
+    finally:
+        await conn.close()
+
+    assert [row["id"] for row in page] == [id2, id1]
+
+
+@pytest.mark.asyncio
+async def test_list_logs_before_id_combines_with_filters(tmp_path):
+    conn = await db.connect(tmp_path / "logs.db")
+    try:
+        await insert_sample_log(conn, method="GET", url="http://x/v1/a")
+        id2 = await insert_sample_log(conn, method="POST", url="http://x/v1/b")
+        await insert_sample_log(conn, method="POST", url="http://x/v1/c")
+        page = await db.list_logs(conn, method="POST", before_id=id2 + 1)
+    finally:
+        await conn.close()
+
+    assert [row["url"] for row in page] == ["http://x/v1/b"]
+
+
+@pytest.mark.asyncio
 async def test_list_logs_omits_headers_and_bodies(tmp_path):
     conn = await db.connect(tmp_path / "logs.db")
     try:

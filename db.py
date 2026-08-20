@@ -91,7 +91,8 @@ def _row_to_summary(row):
     return dict(zip(LOG_SUMMARY_COLUMNS, row))
 
 
-async def list_logs(db, *, method=None, status_code=None, url_contains=None, limit=200):
+async def list_logs(db, *, method=None, status_code=None, url_contains=None,
+                     before_id=None, limit=200):
     clauses = []
     params = []
     if method:
@@ -103,6 +104,9 @@ async def list_logs(db, *, method=None, status_code=None, url_contains=None, lim
     if url_contains:
         clauses.append("url LIKE ?")
         params.append(f"%{url_contains}%")
+    if before_id is not None:
+        clauses.append("id < ?")
+        params.append(before_id)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     params.append(limit)
 

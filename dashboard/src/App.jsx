@@ -3,7 +3,9 @@ import FilterBar from "./components/FilterBar"
 import LogTable from "./components/LogTable"
 import LogDetail from "./components/LogDetail"
 import Analytics from "./components/Analytics"
-import { fetchLogs, streamUrl } from "./api"
+import { fetchLogs, streamUrl, PAGE_SIZE } from "./api"
+
+const MAX_LIVE_LOGS = 500
 
 function matchesFilters(log, filters) {
   if (filters.method && log.method !== filters.method) return false
@@ -14,6 +16,8 @@ function matchesFilters(log, filters) {
 
 export default function App() {
   const [logs, setLogs] = useState([])
+  const [pending, setPending] = useState([])
+  const [hasMore, setHasMore] = useState(false)
   const [filters, setFilters] = useState({ method: "", status: "", urlContains: "" })
   const [selectedId, setSelectedId] = useState(null)
   const [connected, setConnected] = useState(false)
@@ -21,20 +25,38 @@ export default function App() {
 
   // Initial page load: backfill whatever already happened before we connected.
   useEffect(() => {
-    fetchLogs().then(setLogs).catch(console.error)
+    fetchLogs().then((page) => {
+      setLogs(page)
+      setHasMore(page.length === PAGE_SIZE)
+    }).catch(console.error)
   }, [])
 
-  // Live updates: the backend pushes one event per completed request.
+  // Live updates arrive here but are buffered, not shown immediately -- a
+  // table that reorders itself while you're reading a row is bad UX, and
+  // buffering also caps how much unseen data can pile up in the background.
   useEffect(() => {
     const source = new EventSource(streamUrl())
     source.onopen = () => setConnected(true)
     source.onerror = () => setConnected(false)
     source.onmessage = (event) => {
       const log = JSON.parse(event.data)
-      setLogs((prev) => [log, ...prev])
+      setPending((prev) => [log, ...prev].slice(0, MAX_LIVE_LOGS))
     }
     return () => source.close()
   }, [])
+
+  function showPending() {
+    setLogs((prev) => [...pending, ...prev].slice(0, MAX_LIVE_LOGS))
+    setPending([])
+  }
+
+  async function loadOlder() {
+    const oldestId = logs.at(-1)?.id
+    if (oldestId == null) return
+    const older = await fetchLogs({ beforeId: oldestId })
+    setLogs((prev) => [...prev, ...older])
+    setHasMore(older.length === PAGE_SIZE)
+  }
 
   // Filtering runs client-side over everything we already have, so it applies
   // equally to historical rows and rows that just arrived over the stream.
@@ -63,8 +85,19 @@ export default function App() {
       {view === "logs" ? (
         <>
           <FilterBar filters={filters} onChange={setFilters} />
+          {pending.length > 0 && (
+            <button className="pending-banner" onClick={showPending}>
+              {pending.length} new request{pending.length === 1 ? "" : "s"} — click to show
+            </button>
+          )}
           <div className="main-panes">
-            <LogTable logs={filteredLogs} selectedId={selectedId} onSelect={setSelectedId} />
+            <LogTable
+              logs={filteredLogs}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              hasMore={hasMore}
+              onLoadOlder={loadOlder}
+            />
             <LogDetail logId={selectedId} />
           </div>
         </>
