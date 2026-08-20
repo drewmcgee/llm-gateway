@@ -5,25 +5,31 @@ import pytest
 import db
 
 
+async def insert_sample_log(conn, **overrides):
+    fields = dict(
+        created_at="2026-08-19T12:00:00+00:00",
+        method="POST",
+        url="http://localhost:8000/v1/chat/completions",
+        request_headers={"content-type": "application/json"},
+        request_body=b'{"model": "gpt-5-mini"}',
+        status_code=200,
+        response_headers={"content-type": "application/json"},
+        response_body=b'{"id": "chatcmpl-1"}',
+        ttfb_ms=12.5,
+        total_ms=345.0,
+    )
+    fields.update(overrides)
+    return await db.insert_log(conn, **fields)
+
+
 @pytest.mark.asyncio
 async def test_insert_log_round_trips_all_fields(tmp_path):
     conn = await db.connect(tmp_path / "logs.db")
     try:
-        await db.insert_log(
-            conn,
-            method="POST",
-            url="http://localhost:8000/v1/chat/completions",
-            request_headers={"content-type": "application/json"},
-            request_body=b'{"model": "gpt-5-mini"}',
-            status_code=200,
-            response_headers={"content-type": "application/json"},
-            response_body=b'{"id": "chatcmpl-1"}',
-            ttfb_ms=12.5,
-            total_ms=345.0,
-        )
+        await insert_sample_log(conn)
 
         cursor = await conn.execute(
-            "SELECT method, url, request_headers, request_body, "
+            "SELECT created_at, method, url, request_headers, request_body, "
             "status_code, response_headers, response_body, ttfb_ms, total_ms "
             "FROM logs"
         )
@@ -31,9 +37,10 @@ async def test_insert_log_round_trips_all_fields(tmp_path):
     finally:
         await conn.close()
 
-    (method, url, request_headers, request_body, status_code,
+    (created_at, method, url, request_headers, request_body, status_code,
      response_headers, response_body, ttfb_ms, total_ms) = row
 
+    assert created_at == "2026-08-19T12:00:00+00:00"
     assert method == "POST"
     assert url == "http://localhost:8000/v1/chat/completions"
     assert json.loads(request_headers) == {"content-type": "application/json"}
@@ -49,17 +56,11 @@ async def test_insert_log_round_trips_all_fields(tmp_path):
 async def test_insert_log_allows_null_bodies(tmp_path):
     conn = await db.connect(tmp_path / "logs.db")
     try:
-        await db.insert_log(
-            conn,
-            method="GET",
-            url="http://localhost:8000/v1/models",
-            request_headers={},
-            request_body=None,
-            status_code=200,
-            response_headers={},
-            response_body=None,
-            ttfb_ms=1.0,
-            total_ms=2.0,
+        await insert_sample_log(
+            conn, method="GET", url="http://localhost:8000/v1/models",
+            request_headers={}, request_body=None,
+            response_headers={}, response_body=None,
+            ttfb_ms=1.0, total_ms=2.0,
         )
 
         cursor = await conn.execute(
@@ -69,6 +70,110 @@ async def test_insert_log_allows_null_bodies(tmp_path):
         await conn.close()
 
     assert row == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_insert_log_returns_new_row_id(tmp_path):
+    conn = await db.connect(tmp_path / "logs.db")
+    try:
+        first_id = await insert_sample_log(conn)
+        second_id = await insert_sample_log(conn)
+    finally:
+        await conn.close()
+
+    assert second_id == first_id + 1
+
+
+@pytest.mark.asyncio
+async def test_list_logs_returns_most_recent_first(tmp_path):
+    conn = await db.connect(tmp_path / "logs.db")
+    try:
+        await insert_sample_log(conn, url="http://x/v1/first")
+        await insert_sample_log(conn, url="http://x/v1/second")
+        rows = await db.list_logs(conn)
+    finally:
+        await conn.close()
+
+    assert [row["url"] for row in rows] == [
+        "http://x/v1/second", "http://x/v1/first"]
+
+
+@pytest.mark.asyncio
+async def test_list_logs_filters_by_method(tmp_path):
+    conn = await db.connect(tmp_path / "logs.db")
+    try:
+        await insert_sample_log(conn, method="POST", url="http://x/v1/a")
+        await insert_sample_log(conn, method="GET", url="http://x/v1/b")
+        rows = await db.list_logs(conn, method="GET")
+    finally:
+        await conn.close()
+
+    assert [row["url"] for row in rows] == ["http://x/v1/b"]
+
+
+@pytest.mark.asyncio
+async def test_list_logs_filters_by_status_code(tmp_path):
+    conn = await db.connect(tmp_path / "logs.db")
+    try:
+        await insert_sample_log(conn, status_code=200, url="http://x/v1/ok")
+        await insert_sample_log(conn, status_code=500, url="http://x/v1/err")
+        rows = await db.list_logs(conn, status_code=500)
+    finally:
+        await conn.close()
+
+    assert [row["url"] for row in rows] == ["http://x/v1/err"]
+
+
+@pytest.mark.asyncio
+async def test_list_logs_filters_by_url_substring(tmp_path):
+    conn = await db.connect(tmp_path / "logs.db")
+    try:
+        await insert_sample_log(conn, url="http://x/v1/chat/completions")
+        await insert_sample_log(conn, url="http://x/v1/embeddings")
+        rows = await db.list_logs(conn, url_contains="chat")
+    finally:
+        await conn.close()
+
+    assert [row["url"] for row in rows] == ["http://x/v1/chat/completions"]
+
+
+@pytest.mark.asyncio
+async def test_list_logs_omits_headers_and_bodies(tmp_path):
+    conn = await db.connect(tmp_path / "logs.db")
+    try:
+        await insert_sample_log(conn)
+        rows = await db.list_logs(conn)
+    finally:
+        await conn.close()
+
+    assert "request_body" not in rows[0]
+    assert "response_headers" not in rows[0]
+
+
+@pytest.mark.asyncio
+async def test_get_log_returns_full_detail(tmp_path):
+    conn = await db.connect(tmp_path / "logs.db")
+    try:
+        log_id = await insert_sample_log(conn)
+        row = await db.get_log(conn, log_id)
+    finally:
+        await conn.close()
+
+    assert row["id"] == log_id
+    assert row["request_headers"] == {"content-type": "application/json"}
+    assert row["request_body"] == '{"model": "gpt-5-mini"}'
+    assert row["response_body"] == '{"id": "chatcmpl-1"}'
+
+
+@pytest.mark.asyncio
+async def test_get_log_returns_none_for_unknown_id(tmp_path):
+    conn = await db.connect(tmp_path / "logs.db")
+    try:
+        row = await db.get_log(conn, 999)
+    finally:
+        await conn.close()
+
+    assert row is None
 
 
 def test_hash_key_is_deterministic():

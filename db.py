@@ -9,7 +9,7 @@ DB_PATH = "logs.db"
 CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    created_at TEXT NOT NULL,
     method TEXT NOT NULL,
     url TEXT NOT NULL,
     request_headers TEXT NOT NULL,
@@ -42,16 +42,17 @@ async def connect(path=DB_PATH):
     return db
 
 
-async def insert_log(db, *, method, url, request_headers, request_body,
+async def insert_log(db, *, created_at, method, url, request_headers, request_body,
                       status_code, response_headers, response_body,
                       ttfb_ms, total_ms, api_key_label=None):
-    await db.execute(
+    cursor = await db.execute(
         """INSERT INTO logs
-           (method, url, request_headers, request_body,
+           (created_at, method, url, request_headers, request_body,
             status_code, response_headers, response_body,
             ttfb_ms, total_ms, api_key_label)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
+            created_at,
             method,
             url,
             json.dumps(request_headers),
@@ -65,6 +66,75 @@ async def insert_log(db, *, method, url, request_headers, request_body,
         ),
     )
     await db.commit()
+    return cursor.lastrowid
+
+
+LOG_SUMMARY_COLUMNS = ("id", "created_at", "method", "url", "status_code",
+                       "ttfb_ms", "total_ms", "api_key_label")
+
+
+def _row_to_summary(row):
+    return dict(zip(LOG_SUMMARY_COLUMNS, row))
+
+
+async def list_logs(db, *, method=None, status_code=None, url_contains=None, limit=200):
+    clauses = []
+    params = []
+    if method:
+        clauses.append("method = ?")
+        params.append(method)
+    if status_code is not None:
+        clauses.append("status_code = ?")
+        params.append(status_code)
+    if url_contains:
+        clauses.append("url LIKE ?")
+        params.append(f"%{url_contains}%")
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(limit)
+
+    cursor = await db.execute(
+        f"""SELECT {', '.join(LOG_SUMMARY_COLUMNS)} FROM logs
+            {where} ORDER BY id DESC LIMIT ?""",
+        params,
+    )
+    rows = await cursor.fetchall()
+    return [_row_to_summary(row) for row in rows]
+
+
+async def get_log(db, log_id):
+    cursor = await db.execute(
+        """SELECT id, created_at, method, url, request_headers, request_body,
+                  status_code, response_headers, response_body,
+                  ttfb_ms, total_ms, api_key_label
+           FROM logs WHERE id = ?""",
+        (log_id,),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return None
+    (log_id, created_at, method, url, request_headers, request_body,
+     status_code, response_headers, response_body, ttfb_ms, total_ms,
+     api_key_label) = row
+    return {
+        "id": log_id,
+        "created_at": created_at,
+        "method": method,
+        "url": url,
+        "request_headers": json.loads(request_headers),
+        "request_body": _decode_body(request_body),
+        "status_code": status_code,
+        "response_headers": json.loads(response_headers),
+        "response_body": _decode_body(response_body),
+        "ttfb_ms": ttfb_ms,
+        "total_ms": total_ms,
+        "api_key_label": api_key_label,
+    }
+
+
+def _decode_body(body):
+    if body is None:
+        return None
+    return body.decode("utf-8", errors="replace")
 
 
 def hash_key(raw_key):
