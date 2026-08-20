@@ -40,10 +40,7 @@ live SSE feed the dashboard subscribes to. `POST /logs` is the ingest endpoint.
 The assignment prefers TypeScript for the backend. I chose Python because
 FastAPI + httpx + asyncio is a robust, production-proven stack for exactly this
 shape of service — an async streaming proxy with typed wire formats (Pydantic
-validates the log record schema in `backend.py`) — and it's the language where
-I write my strongest async server code. Well-designed, well-tested code in my
-best language seemed like a better signal than passable TypeScript; the React
-dashboard covers the JavaScript half. The architecture itself is
+validates the log record schema in `backend.py`). The architecture itself is
 language-agnostic: the port maps one-to-one onto Fastify + fetch streams, with
 `asyncio.create_task` becoming an un-awaited Promise.
 
@@ -51,17 +48,15 @@ language-agnostic: the port maps one-to-one onto Fastify + fetch streams, with
 
 The proxy never awaits the log write. `LogClient.send()` schedules the POST with
 `asyncio.create_task` and returns immediately, and `post()` swallows every
-exception. Consequences worth stating plainly:
+exception. The importance of this is to keep the hot path of the API unobstructed by logging and backend serving tasks. The design decisions related to this are:
 
 - **Gateway availability doesn't depend on the logger.** If the backend is down,
   requests are still proxied and still stream normally; the record is dropped
   with a warning on stdout. Verified: with `backend.py` killed, the proxy still
   answers in ~3ms.
-- **Stream teardown isn't blocked by a database write.** Previously the log
-  insert happened inline in `body_iterator`'s `finally`, so every client waited
-  on it. Now the client's stream closes at its own pace.
+- **Stream teardown isn't blocked by a database write.**
 - **Auth doesn't cross the network.** Key lookup hits the proxy's own `keys.db`,
-  not the backend — no per-request HTTP hop on the hot path, and no dependency
+  not the backend. So there is no per-request HTTP hop on the hot path, and no dependency
   on the logging service to authenticate.
 
 The tradeoff is that logging is best-effort: a dropped record is gone. That is
