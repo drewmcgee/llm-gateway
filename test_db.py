@@ -25,7 +25,7 @@ async def insert_sample_log(conn, **overrides):
 
 @pytest.mark.asyncio
 async def test_insert_log_round_trips_all_fields(tmp_path):
-    conn = await db.connect(tmp_path / "logs.db")
+    conn = await db.connect_logs(tmp_path / "logs.db")
     try:
         await insert_sample_log(conn)
 
@@ -55,7 +55,7 @@ async def test_insert_log_round_trips_all_fields(tmp_path):
 
 @pytest.mark.asyncio
 async def test_insert_log_allows_null_bodies(tmp_path):
-    conn = await db.connect(tmp_path / "logs.db")
+    conn = await db.connect_logs(tmp_path / "logs.db")
     try:
         await insert_sample_log(
             conn, method="GET", url="http://localhost:8000/v1/models",
@@ -75,7 +75,7 @@ async def test_insert_log_allows_null_bodies(tmp_path):
 
 @pytest.mark.asyncio
 async def test_insert_log_returns_new_row_id(tmp_path):
-    conn = await db.connect(tmp_path / "logs.db")
+    conn = await db.connect_logs(tmp_path / "logs.db")
     try:
         first_id = await insert_sample_log(conn)
         second_id = await insert_sample_log(conn)
@@ -87,7 +87,7 @@ async def test_insert_log_returns_new_row_id(tmp_path):
 
 @pytest.mark.asyncio
 async def test_list_logs_returns_most_recent_first(tmp_path):
-    conn = await db.connect(tmp_path / "logs.db")
+    conn = await db.connect_logs(tmp_path / "logs.db")
     try:
         await insert_sample_log(conn, url="http://x/v1/first")
         await insert_sample_log(conn, url="http://x/v1/second")
@@ -101,7 +101,7 @@ async def test_list_logs_returns_most_recent_first(tmp_path):
 
 @pytest.mark.asyncio
 async def test_list_logs_filters_by_method(tmp_path):
-    conn = await db.connect(tmp_path / "logs.db")
+    conn = await db.connect_logs(tmp_path / "logs.db")
     try:
         await insert_sample_log(conn, method="POST", url="http://x/v1/a")
         await insert_sample_log(conn, method="GET", url="http://x/v1/b")
@@ -114,7 +114,7 @@ async def test_list_logs_filters_by_method(tmp_path):
 
 @pytest.mark.asyncio
 async def test_list_logs_filters_by_status_code(tmp_path):
-    conn = await db.connect(tmp_path / "logs.db")
+    conn = await db.connect_logs(tmp_path / "logs.db")
     try:
         await insert_sample_log(conn, status_code=200, url="http://x/v1/ok")
         await insert_sample_log(conn, status_code=500, url="http://x/v1/err")
@@ -127,7 +127,7 @@ async def test_list_logs_filters_by_status_code(tmp_path):
 
 @pytest.mark.asyncio
 async def test_list_logs_filters_by_url_substring(tmp_path):
-    conn = await db.connect(tmp_path / "logs.db")
+    conn = await db.connect_logs(tmp_path / "logs.db")
     try:
         await insert_sample_log(conn, url="http://x/v1/chat/completions")
         await insert_sample_log(conn, url="http://x/v1/embeddings")
@@ -140,7 +140,7 @@ async def test_list_logs_filters_by_url_substring(tmp_path):
 
 @pytest.mark.asyncio
 async def test_list_logs_before_id_returns_older_rows_only(tmp_path):
-    conn = await db.connect(tmp_path / "logs.db")
+    conn = await db.connect_logs(tmp_path / "logs.db")
     try:
         id1 = await insert_sample_log(conn, url="http://x/v1/a")
         id2 = await insert_sample_log(conn, url="http://x/v1/b")
@@ -154,7 +154,7 @@ async def test_list_logs_before_id_returns_older_rows_only(tmp_path):
 
 @pytest.mark.asyncio
 async def test_list_logs_before_id_combines_with_filters(tmp_path):
-    conn = await db.connect(tmp_path / "logs.db")
+    conn = await db.connect_logs(tmp_path / "logs.db")
     try:
         await insert_sample_log(conn, method="GET", url="http://x/v1/a")
         id2 = await insert_sample_log(conn, method="POST", url="http://x/v1/b")
@@ -168,7 +168,7 @@ async def test_list_logs_before_id_combines_with_filters(tmp_path):
 
 @pytest.mark.asyncio
 async def test_list_logs_omits_headers_and_bodies(tmp_path):
-    conn = await db.connect(tmp_path / "logs.db")
+    conn = await db.connect_logs(tmp_path / "logs.db")
     try:
         await insert_sample_log(conn)
         rows = await db.list_logs(conn)
@@ -181,7 +181,7 @@ async def test_list_logs_omits_headers_and_bodies(tmp_path):
 
 @pytest.mark.asyncio
 async def test_get_log_returns_full_detail(tmp_path):
-    conn = await db.connect(tmp_path / "logs.db")
+    conn = await db.connect_logs(tmp_path / "logs.db")
     try:
         log_id = await insert_sample_log(conn)
         row = await db.get_log(conn, log_id)
@@ -196,7 +196,7 @@ async def test_get_log_returns_full_detail(tmp_path):
 
 @pytest.mark.asyncio
 async def test_list_logs_includes_model_and_token_fields(tmp_path):
-    conn = await db.connect(tmp_path / "logs.db")
+    conn = await db.connect_logs(tmp_path / "logs.db")
     try:
         await insert_sample_log(
             conn, model="gpt-5-mini", prompt_tokens=10,
@@ -213,7 +213,7 @@ async def test_list_logs_includes_model_and_token_fields(tmp_path):
 
 @pytest.mark.asyncio
 async def test_get_log_includes_model_and_token_fields(tmp_path):
-    conn = await db.connect(tmp_path / "logs.db")
+    conn = await db.connect_logs(tmp_path / "logs.db")
     try:
         log_id = await insert_sample_log(
             conn, model="gpt-5-mini", prompt_tokens=10,
@@ -230,7 +230,7 @@ async def test_get_log_includes_model_and_token_fields(tmp_path):
 
 @pytest.mark.asyncio
 async def test_model_and_tokens_default_to_none(tmp_path):
-    conn = await db.connect(tmp_path / "logs.db")
+    conn = await db.connect_logs(tmp_path / "logs.db")
     try:
         log_id = await insert_sample_log(conn)
         row = await db.get_log(conn, log_id)
@@ -243,7 +243,7 @@ async def test_model_and_tokens_default_to_none(tmp_path):
 
 @pytest.mark.asyncio
 async def test_list_logs_includes_source(tmp_path):
-    conn = await db.connect(tmp_path / "logs.db")
+    conn = await db.connect_logs(tmp_path / "logs.db")
     try:
         await insert_sample_log(conn, source="gateway")
         rows = await db.list_logs(conn)
@@ -255,7 +255,7 @@ async def test_list_logs_includes_source(tmp_path):
 
 @pytest.mark.asyncio
 async def test_get_log_includes_source(tmp_path):
-    conn = await db.connect(tmp_path / "logs.db")
+    conn = await db.connect_logs(tmp_path / "logs.db")
     try:
         log_id = await insert_sample_log(conn, source="gateway")
         row = await db.get_log(conn, log_id)
@@ -267,7 +267,7 @@ async def test_get_log_includes_source(tmp_path):
 
 @pytest.mark.asyncio
 async def test_insert_log_rejects_unrecognized_source(tmp_path):
-    conn = await db.connect(tmp_path / "logs.db")
+    conn = await db.connect_logs(tmp_path / "logs.db")
     try:
         with pytest.raises(Exception):
             await insert_sample_log(conn, source="something-else")
@@ -277,7 +277,7 @@ async def test_insert_log_rejects_unrecognized_source(tmp_path):
 
 @pytest.mark.asyncio
 async def test_insert_log_requires_source(tmp_path):
-    conn = await db.connect(tmp_path / "logs.db")
+    conn = await db.connect_logs(tmp_path / "logs.db")
     try:
         with pytest.raises(TypeError):
             fields = dict(
@@ -293,7 +293,7 @@ async def test_insert_log_requires_source(tmp_path):
 
 @pytest.mark.asyncio
 async def test_get_log_returns_none_for_unknown_id(tmp_path):
-    conn = await db.connect(tmp_path / "logs.db")
+    conn = await db.connect_logs(tmp_path / "logs.db")
     try:
         row = await db.get_log(conn, 999)
     finally:
@@ -316,7 +316,7 @@ def test_hash_key_does_not_return_the_raw_key():
 
 @pytest.mark.asyncio
 async def test_create_api_key_returns_prefixed_raw_key(tmp_path):
-    conn = await db.connect(tmp_path / "logs.db")
+    conn = await db.connect_keys(tmp_path / "keys.db")
     try:
         raw_key = await db.create_api_key(conn, "demo-user")
     finally:
@@ -327,7 +327,7 @@ async def test_create_api_key_returns_prefixed_raw_key(tmp_path):
 
 @pytest.mark.asyncio
 async def test_create_api_key_stores_hash_not_plaintext(tmp_path):
-    conn = await db.connect(tmp_path / "logs.db")
+    conn = await db.connect_keys(tmp_path / "keys.db")
     try:
         raw_key = await db.create_api_key(conn, "demo-user")
         cursor = await conn.execute("SELECT key_hash FROM api_keys")
@@ -341,7 +341,7 @@ async def test_create_api_key_stores_hash_not_plaintext(tmp_path):
 
 @pytest.mark.asyncio
 async def test_get_api_key_label_returns_label_for_known_key(tmp_path):
-    conn = await db.connect(tmp_path / "logs.db")
+    conn = await db.connect_keys(tmp_path / "keys.db")
     try:
         raw_key = await db.create_api_key(conn, "demo-user")
         label = await db.get_api_key_label(conn, db.hash_key(raw_key))
@@ -353,7 +353,7 @@ async def test_get_api_key_label_returns_label_for_known_key(tmp_path):
 
 @pytest.mark.asyncio
 async def test_get_api_key_label_returns_none_for_unknown_key(tmp_path):
-    conn = await db.connect(tmp_path / "logs.db")
+    conn = await db.connect_keys(tmp_path / "keys.db")
     try:
         label = await db.get_api_key_label(conn, db.hash_key("gw_never-issued"))
     finally:
@@ -363,13 +363,13 @@ async def test_get_api_key_label_returns_none_for_unknown_key(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_connect_creates_table_idempotently(tmp_path):
+async def test_connect_logs_creates_table_idempotently(tmp_path):
     path = tmp_path / "logs.db"
 
-    conn1 = await db.connect(path)
+    conn1 = await db.connect_logs(path)
     await conn1.close()
 
-    conn2 = await db.connect(path)
+    conn2 = await db.connect_logs(path)
     try:
         cursor = await conn2.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='logs'")
@@ -378,3 +378,31 @@ async def test_connect_creates_table_idempotently(tmp_path):
         await conn2.close()
 
     assert row is not None
+
+
+@pytest.mark.asyncio
+async def test_connect_keys_creates_api_keys_table(tmp_path):
+    conn = await db.connect_keys(tmp_path / "keys.db")
+    try:
+        cursor = await conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='api_keys'")
+        row = await cursor.fetchone()
+    finally:
+        await conn.close()
+
+    assert row is not None
+
+
+@pytest.mark.asyncio
+async def test_connect_logs_does_not_create_the_key_store(tmp_path):
+    # The two processes own separate schemas; neither file carries the other's
+    # tables, so a mixed-up connection fails loudly instead of silently.
+    conn = await db.connect_logs(tmp_path / "logs.db")
+    try:
+        cursor = await conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='api_keys'")
+        row = await cursor.fetchone()
+    finally:
+        await conn.close()
+
+    assert row is None

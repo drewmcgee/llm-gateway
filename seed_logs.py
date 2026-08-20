@@ -10,7 +10,7 @@ STATUSES = [200, 200, 200, 200, 400, 401, 500]
 
 
 async def main(count):
-    conn = await db_module.connect()
+    conn = await db_module.connect_logs()
     now = datetime.now(timezone.utc)
     try:
         for i in range(count):

@@ -5,7 +5,7 @@ import db as db_module
 
 
 async def main(label):
-    conn = await db_module.connect()
+    conn = await db_module.connect_keys()
     try:
         raw_key = await db_module.create_api_key(conn, label)
     finally:

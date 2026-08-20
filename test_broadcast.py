@@ -1,7 +1,7 @@
 import pytest
 
 from broadcast import Broadcaster
-from main import format_sse_event
+from backend import format_sse_event
 
 
 def test_subscribe_returns_independent_queues():

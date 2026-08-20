@@ -1,38 +1,46 @@
+"""LLM gateway proxy (port 8000).
+
+Authenticates callers, forwards /v1/* to OpenAI while streaming the response
+back untouched, and ships a log record to the logging backend afterwards.
+Log shipping is fire-and-forget: nothing on the request path ever awaits it.
+"""
+
 import json
 import os
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from functools import partial
+
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import httpx
 from dotenv import load_dotenv
 
 import db as db_module
-from broadcast import Broadcaster
+from logclient import DEFAULT_BACKEND_URL, LogClient, build_record
 
 load_dotenv()
+
+ENDPOINT = "https://api.openai.com"
+BACKEND_URL = os.getenv("BACKEND_URL", DEFAULT_BACKEND_URL)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.client = httpx.AsyncClient(
         timeout=httpx.Timeout(300.0, connect=10.0))
-    app.state.db = await db_module.connect()
-    app.state.broadcaster = Broadcaster()
+    # Keys are the proxy's own state: authenticating a request must not depend
+    # on the logging backend being up, and must not cost a network hop.
+    app.state.keys_db = await db_module.connect_keys()
+    app.state.log_client = LogClient(BACKEND_URL)
     yield
-    await app.state.db.close()
+    await app.state.log_client.aclose()
+    await app.state.keys_db.close()
     await app.state.client.aclose()
 
 
 app = FastAPI(lifespan=lifespan)
-# Dashboard is a separate dev-server origin; this is a local inspection tool
-# with no cookies/credentials in play, so a permissive policy is fine here.
-app.add_middleware(CORSMiddleware, allow_origins=["*"],
-                    allow_methods=["*"], allow_headers=["*"])
-ENDPOINT = "https://api.openai.com"
 
 STRIP_REQ = {"host", "content-length", "connection", "transfer-encoding",
              "keep-alive", "upgrade", "accept-encoding", "x-api-key"}
@@ -41,15 +49,8 @@ STRIP_RESP = {"content-length", "connection", "transfer-encoding",
 
 
 async def log_request(status_code, body, ttfb_ms, total_ms):
-    print(f"[LOG] {status_code} ttfb={ttfb_ms:.0f}ms total={total_ms:.0f}ms")
-
-
-REDACT_HEADERS = {"authorization", "x-api-key"}
-
-
-def redact_headers(headers):
-    return {k: ("REDACTED" if k.lower() in REDACT_HEADERS else v)
-            for k, v in headers.items()}
+    print(f"[LOG] {status_code} ttfb={ttfb_ms:.0f}ms total={total_ms:.0f}ms",
+          flush=True)
 
 
 def extract_model(request_body):
@@ -77,54 +78,9 @@ def extract_usage(response_body):
     }
 
 
-async def write_log(db, broadcaster, *, created_at, method, url, status_code,
-                     ttfb_ms, total_ms, request_headers, request_body,
-                     response_headers, response_body, source, api_key_label=None,
-                     model=None, prompt_tokens=None, completion_tokens=None,
-                     total_tokens=None):
-    log_id = await db_module.insert_log(
-        db,
-        created_at=created_at,
-        method=method,
-        url=url,
-        request_headers=redact_headers(request_headers),
-        request_body=request_body,
-        status_code=status_code,
-        response_headers=response_headers,
-        response_body=response_body,
-        ttfb_ms=ttfb_ms,
-        total_ms=total_ms,
-        source=source,
-        api_key_label=api_key_label,
-        model=model,
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-        total_tokens=total_tokens,
-    )
-    if broadcaster is not None:
-        broadcaster.publish({
-            "id": log_id,
-            "created_at": created_at,
-            "method": method,
-            "url": url,
-            "status_code": status_code,
-            "ttfb_ms": ttfb_ms,
-            "total_ms": total_ms,
-            "source": source,
-            "api_key_label": api_key_label,
-            "model": model,
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": total_tokens,
-        })
-    return log_id
-
-
 async def log_rejected_request(request, reason):
     body = await request.body()
-    await write_log(
-        request.app.state.db,
-        request.app.state.broadcaster,
+    request.app.state.log_client.send(build_record(
         created_at=datetime.now(timezone.utc).isoformat(),
         method=request.method,
         url=str(request.url),
@@ -137,7 +93,7 @@ async def log_rejected_request(request, reason):
         response_body=json.dumps({"detail": reason}).encode(),
         source="gateway",
         model=extract_model(body),
-    )
+    ))
 
 
 async def require_api_key(request: Request, x_api_key: str | None = Header(None, alias="X-API-Key")):
@@ -145,21 +101,21 @@ async def require_api_key(request: Request, x_api_key: str | None = Header(None,
         await log_rejected_request(request, "missing X-API-Key header")
         raise HTTPException(status_code=401, detail="missing X-API-Key header")
     label = await db_module.get_api_key_label(
-        request.app.state.db, db_module.hash_key(x_api_key))
+        request.app.state.keys_db, db_module.hash_key(x_api_key))
     if label is None:
         await log_rejected_request(request, "invalid API key")
         raise HTTPException(status_code=401, detail="invalid API key")
     return label
 
 
-async def persist_log(status_code, body, ttfb_ms, total_ms, *, db, method,
-                       url, request_headers, request_body, response_headers,
-                       api_key_label=None, broadcaster=None):
+async def persist_log(status_code, body, ttfb_ms, total_ms, *, log_client,
+                       method, url, request_headers, request_body,
+                       response_headers, api_key_label=None):
+    # Deliberately awaits nothing: send() only schedules the POST, so stream
+    # teardown finishes at the client's pace, not the backend's.
     model = extract_model(request_body)
     usage = extract_usage(body) or {}
-    await write_log(
-        db,
-        broadcaster,
+    log_client.send(build_record(
         created_at=datetime.now(timezone.utc).isoformat(),
         method=method,
         url=url,
@@ -176,7 +132,7 @@ async def persist_log(status_code, body, ttfb_ms, total_ms, *, db, method,
         prompt_tokens=usage.get("prompt_tokens"),
         completion_tokens=usage.get("completion_tokens"),
         total_tokens=usage.get("total_tokens"),
-    )
+    ))
 
 
 async def body_iterator(upstream, start, ttfb_ms, on_complete=log_request):
@@ -215,51 +171,14 @@ async def proxy(path: str, request: Request, api_key_label: str = Depends(requir
 
     on_complete = partial(
         persist_log,
-        db=request.app.state.db,
+        log_client=request.app.state.log_client,
         method=request.method,
         url=str(request.url),
         request_headers=dict(request.headers),
         request_body=body,
         response_headers=dict(upstream.headers),
         api_key_label=api_key_label,
-        broadcaster=request.app.state.broadcaster,
     )
     return StreamingResponse(body_iterator(upstream, start, ttfb_ms, on_complete), status_code=upstream.status_code,
                              headers=response_headers,
                              media_type=upstream.headers.get("content-type"))
-
-
-@app.get("/logs")
-async def list_logs(request: Request, method: str | None = None,
-                     status_code: int | None = None, url_contains: str | None = None,
-                     before_id: int | None = None, limit: int = 200):
-    return await db_module.list_logs(
-        request.app.state.db, method=method, status_code=status_code,
-        url_contains=url_contains, before_id=before_id, limit=limit)
-
-
-def format_sse_event(data):
-    return f"data: {json.dumps(data)}\n\n"
-
-
-@app.get("/logs/stream")
-async def stream_logs(request: Request):
-    queue = request.app.state.broadcaster.subscribe()
-
-    async def event_source():
-        try:
-            while True:
-                event = await queue.get()
-                yield format_sse_event(event)
-        finally:
-            request.app.state.broadcaster.unsubscribe(queue)
-
-    return StreamingResponse(event_source(), media_type="text/event-stream")
-
-
-@app.get("/logs/{log_id}")
-async def get_log(log_id: int, request: Request):
-    row = await db_module.get_log(request.app.state.db, log_id)
-    if row is None:
-        raise HTTPException(status_code=404, detail="log not found")
-    return row

@@ -1,4 +1,4 @@
-from main import extract_model, extract_usage
+from proxy import extract_model, extract_usage
 
 
 def test_extract_model_reads_model_field():

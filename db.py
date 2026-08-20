@@ -4,7 +4,8 @@ import secrets
 
 import aiosqlite
 
-DB_PATH = "logs.db"
+LOGS_DB_PATH = "logs.db"
+KEYS_DB_PATH = "keys.db"
 
 CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS logs (
@@ -38,13 +39,24 @@ CREATE TABLE IF NOT EXISTS api_keys (
 """
 
 
-async def connect(path=DB_PATH):
+async def _connect(path, *schema):
     db = await aiosqlite.connect(path)
     await db.execute("PRAGMA journal_mode=WAL")
-    await db.execute(CREATE_TABLE_SQL)
-    await db.execute(CREATE_API_KEYS_TABLE_SQL)
+    for statement in schema:
+        await db.execute(statement)
     await db.commit()
     return db
+
+
+# The proxy and the backend are separate processes owning separate stores: the
+# backend owns the log history, the proxy owns the API keys it authenticates
+# against. Neither reaches into the other's database file.
+async def connect_logs(path=LOGS_DB_PATH):
+    return await _connect(path, CREATE_TABLE_SQL)
+
+
+async def connect_keys(path=KEYS_DB_PATH):
+    return await _connect(path, CREATE_API_KEYS_TABLE_SQL)
 
 
 async def insert_log(db, *, created_at, method, url, request_headers, request_body,

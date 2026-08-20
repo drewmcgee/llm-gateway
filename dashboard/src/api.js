@@ -1,4 +1,4 @@
-const API_BASE = "http://localhost:8000"
+const API_BASE = "http://localhost:8001"
 export const PAGE_SIZE = 200
 
 export async function fetchLogs({ beforeId } = {}) {

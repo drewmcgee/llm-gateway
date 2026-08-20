@@ -6,3 +6,6 @@ logs.db-wal
 logs.db-shm
 .env
 dashboard/node_modules/
+keys.db
+keys.db-wal
+keys.db-shm
