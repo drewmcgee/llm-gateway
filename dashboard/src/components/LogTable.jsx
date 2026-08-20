@@ -34,7 +34,9 @@ export default function LogTable({ logs, selectedId, onSelect, hasMore, onLoadOl
               onClick={() => onSelect(log.id)}
             >
               <td>
-                <span className="method-badge">{log.method}</span>
+                <span className={`method-badge method-${log.method.toLowerCase()}`}>
+                  {log.method}
+                </span>
               </td>
               <td className="url-cell">{log.url}</td>
               <td>

@@ -221,6 +221,25 @@ body {
   color: var(--text-muted);
 }
 
+/* Reads/writes/deletes are worth telling apart at a glance once the gateway
+   forwards more than POST. Colour is a secondary cue -- the verb is the label. */
+.method-get {
+  color: #7aa2f7;
+}
+
+.method-post {
+  color: var(--success);
+}
+
+.method-put,
+.method-patch {
+  color: var(--warning);
+}
+
+.method-delete {
+  color: var(--danger);
+}
+
 .status-badge {
   font-size: 12px;
   font-weight: 600;
@@ -388,4 +407,57 @@ body {
 .stat-sub {
   font-size: 12px;
   color: var(--text-muted);
+}
+
+.sse-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.sse-toolbar button {
+  background: var(--surface-raised);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sse-toolbar button:hover {
+  border-color: var(--accent);
+}
+
+.sse-events {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.sse-events li {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.sse-count {
+  min-width: 52px;
+  text-align: right;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.sse-text {
+  white-space: pre-wrap;
+  word-break: break-word;
 }

@@ -1,5 +1,62 @@
 import { useEffect, useState } from "react"
 import { fetchLog } from "../api"
+import { parseSseBody } from "../sse"
+
+// Usage is reported differently per endpoint: chat and responses give all
+// three counts, embeddings give a prompt count and no completion count, and a
+// streamed response gives none at all. Show whatever is actually there.
+function formatTokens({ prompt_tokens, completion_tokens, total_tokens }) {
+  const breakdown = [
+    prompt_tokens != null && `${prompt_tokens} prompt`,
+    completion_tokens != null && `${completion_tokens} completion`,
+  ].filter(Boolean)
+
+  if (total_tokens == null) return breakdown.length > 0 ? breakdown.join(" / ") : "—"
+  return breakdown.length > 0 ? `${total_tokens} (${breakdown.join(" / ")})` : `${total_tokens}`
+}
+
+// Streamed bodies get a summary + the reconstructed output by default; the
+// raw frames are one click away.
+function ResponseBody({ body }) {
+  const [showRaw, setShowRaw] = useState(false)
+  const stream = parseSseBody(body)
+
+  if (!stream) return <pre>{formatBody(body)}</pre>
+
+  return (
+    <>
+      <div className="sse-toolbar">
+        <span>
+          {stream.frameCount.toLocaleString()} streamed events ·{" "}
+          {stream.byteLength.toLocaleString()} bytes
+        </span>
+        <button onClick={() => setShowRaw((raw) => !raw)}>
+          {showRaw ? "Show summary" : "Show raw frames"}
+        </button>
+      </div>
+
+      {showRaw ? (
+        <pre>{body}</pre>
+      ) : (
+        <>
+          <ul className="sse-events">
+            {stream.events.map(([name, count]) => (
+              <li key={name}>
+                <span className="sse-count">{count.toLocaleString()}×</span> {name}
+              </li>
+            ))}
+          </ul>
+          {stream.text !== "" && (
+            <>
+              <h4>Reconstructed output</h4>
+              <pre className="sse-text">{stream.text}</pre>
+            </>
+          )}
+        </>
+      )}
+    </>
+  )
+}
 
 function formatBody(body) {
   if (!body) return "(empty)"
@@ -55,7 +112,7 @@ export default function LogDetail({ logId }) {
         <dt>Model</dt>
         <dd>{log.model ?? "—"}</dd>
         <dt>Tokens</dt>
-        <dd>{log.total_tokens != null ? `${log.total_tokens} (${log.prompt_tokens} prompt / ${log.completion_tokens} completion)` : "—"}</dd>
+        <dd>{formatTokens(log)}</dd>
         <dt>Time</dt>
         <dd>{new Date(log.created_at).toLocaleString()}</dd>
       </dl>
@@ -70,7 +127,7 @@ export default function LogDetail({ logId }) {
       <pre>{JSON.stringify(log.response_headers, null, 2)}</pre>
 
       <h3>Response body</h3>
-      <pre>{formatBody(log.response_body)}</pre>
+      <ResponseBody key={log.id} body={log.response_body} />
     </div>
   )
 }

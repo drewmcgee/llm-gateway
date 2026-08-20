@@ -162,3 +162,177 @@ async def test_stream_is_unaffected_when_the_logging_backend_is_down():
 
     assert yielded == [b"hello ", b"world"]
     await log_client.drain()  # the failure stays inside the log task
+
+
+# --- method coverage: the proxy driven as a real ASGI app -------------------
+
+import json
+import os
+from contextlib import asynccontextmanager
+
+import db
+from proxy import PROXY_METHODS, app as proxy_app, upstream_url
+
+os.environ.setdefault("OPENAI_API_KEY", "sk-test-not-real")
+
+
+class RecordingLogClient:
+    def __init__(self):
+        self.sent = []
+
+    def send(self, record):
+        self.sent.append(record)
+
+
+def stream_response(payload, status=200):
+    """MockTransport response usable with client.send(..., stream=True)."""
+    async def body():
+        yield json.dumps(payload).encode()
+
+    return httpx.Response(status, headers={"content-type": "application/json"},
+                          content=body())
+
+
+@asynccontextmanager
+async def gateway(tmp_path, handler):
+    """The real proxy app, a stubbed upstream, and a throwaway key store."""
+    seen = []
+
+    def recording_handler(request):
+        seen.append(request)
+        return handler(request)
+
+    proxy_app.state.client = httpx.AsyncClient(
+        transport=httpx.MockTransport(recording_handler))
+    proxy_app.state.keys_db = await db.connect_keys(tmp_path / "keys.db")
+    proxy_app.state.log_client = RecordingLogClient()
+    raw_key = await db.create_api_key(proxy_app.state.keys_db, "test-key")
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=proxy_app),
+                                 base_url="http://gw") as client:
+        yield client, raw_key, seen, proxy_app.state.log_client
+
+    await proxy_app.state.client.aclose()
+    await proxy_app.state.keys_db.close()
+
+
+@pytest.mark.parametrize("method", PROXY_METHODS)
+@pytest.mark.asyncio
+async def test_every_supported_method_is_intercepted_and_forwarded(tmp_path, method):
+    async with gateway(tmp_path, lambda r: stream_response({"ok": True})) as (
+            client, raw_key, seen, log_client):
+        response = await client.request(
+            method, "/v1/models", headers={"X-API-Key": raw_key})
+
+    assert response.status_code == 200
+    assert seen[0].method == method          # forwarded verb, not rewritten
+    assert log_client.sent[0]["method"] == method   # and logged as itself
+
+
+@pytest.mark.asyncio
+async def test_query_string_is_forwarded_to_upstream(tmp_path):
+    async with gateway(tmp_path, lambda r: stream_response({"data": []})) as (
+            client, raw_key, seen, _):
+        await client.get("/v1/files?purpose=assistants&limit=5",
+                         headers={"X-API-Key": raw_key})
+
+    assert str(seen[0].url) == "https://api.openai.com/v1/files?purpose=assistants&limit=5"
+
+
+@pytest.mark.asyncio
+async def test_bodyless_request_is_forwarded_without_a_body(tmp_path):
+    async with gateway(tmp_path, lambda r: stream_response({"ok": True})) as (
+            client, raw_key, seen, _):
+        await client.get("/v1/models", headers={"X-API-Key": raw_key})
+
+    assert seen[0].headers.get("content-length") in (None, "0")
+    assert seen[0].content == b""
+
+
+@pytest.mark.asyncio
+async def test_delete_passes_the_upstream_status_through(tmp_path):
+    async with gateway(tmp_path, lambda r: stream_response({"deleted": True}, 404)) as (
+            client, raw_key, seen, _):
+        response = await client.delete("/v1/files/file-123",
+                                       headers={"X-API-Key": raw_key})
+
+    assert response.status_code == 404
+    assert seen[0].method == "DELETE"
+
+
+@pytest.mark.asyncio
+async def test_get_request_body_and_response_are_logged(tmp_path):
+    async with gateway(tmp_path, lambda r: stream_response({"data": ["gpt-5-mini"]})) as (
+            client, raw_key, _, log_client):
+        await client.get("/v1/models", headers={"X-API-Key": raw_key})
+
+    record = log_client.sent[0]
+    assert record["method"] == "GET"
+    assert record["status_code"] == 200
+    assert record["source"] == "upstream"
+    assert record["api_key_label"] == "test-key"
+
+
+@pytest.mark.asyncio
+async def test_unauthenticated_get_is_rejected_and_logged(tmp_path):
+    async with gateway(tmp_path, lambda r: stream_response({"ok": True})) as (
+            client, _, seen, log_client):
+        response = await client.get("/v1/models")
+
+    assert response.status_code == 401
+    assert seen == []                                   # never reached upstream
+    assert log_client.sent[0]["method"] == "GET"
+    assert log_client.sent[0]["source"] == "gateway"
+
+
+def test_upstream_url_omits_the_question_mark_without_a_query():
+    assert upstream_url("models", "") == "https://api.openai.com/v1/models"
+    assert upstream_url("models", "limit=5") == "https://api.openai.com/v1/models?limit=5"
+
+
+@pytest.mark.asyncio
+async def test_sdk_style_bearer_auth_reaches_upstream_with_our_key_only(tmp_path):
+    """An OpenAI SDK sends Authorization: Bearer. The gateway must authenticate
+    it, then replace it -- never forward the caller's key, and never send two."""
+    async with gateway(tmp_path, lambda r: stream_response({"ok": True})) as (
+            client, raw_key, seen, log_client):
+        response = await client.post(
+            "/v1/responses",
+            headers={"Authorization": f"Bearer {raw_key}",
+                     "content-type": "application/json"},
+            content=b'{"model":"gpt-5-mini","input":"hi"}')
+
+    assert response.status_code == 200
+    sent = seen[0].headers.get_list("authorization")
+    assert len(sent) == 1                                  # exactly one, not two
+    assert sent[0] == f"Bearer {os.environ['OPENAI_API_KEY']}"
+    assert raw_key not in str(seen[0].headers)             # caller's key never leaves
+
+
+@pytest.mark.asyncio
+async def test_caller_credentials_are_never_forwarded_upstream(tmp_path):
+    async with gateway(tmp_path, lambda r: stream_response({"ok": True})) as (
+            client, raw_key, seen, _):
+        await client.post("/v1/responses",
+                          headers={"X-API-Key": raw_key,
+                                   "Authorization": "Bearer sk-callers-own-openai-key",
+                                   "content-type": "application/json"},
+                          content=b'{"model":"gpt-5-mini","input":"hi"}')
+
+    forwarded = str(seen[0].headers)
+    assert "sk-callers-own-openai-key" not in forwarded
+    assert raw_key not in forwarded
+    assert seen[0].headers.get_list("authorization") == [
+        f"Bearer {os.environ['OPENAI_API_KEY']}"]
+
+
+@pytest.mark.asyncio
+async def test_missing_credentials_message_names_both_schemes(tmp_path):
+    async with gateway(tmp_path, lambda r: stream_response({"ok": True})) as (
+            client, _, seen, _):
+        response = await client.post("/v1/responses", content=b'{}')
+
+    assert response.status_code == 401
+    detail = response.json()["detail"]
+    assert "X-API-Key" in detail and "Bearer" in detail
+    assert seen == []

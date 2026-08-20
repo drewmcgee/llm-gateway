@@ -1,3 +1,6 @@
+// Mirrors PROXY_METHODS in proxy.py -- every method the gateway forwards.
+const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+
 export default function FilterBar({ filters, onChange }) {
   function set(field, value) {
     onChange({ ...filters, [field]: value })
@@ -7,8 +10,9 @@ export default function FilterBar({ filters, onChange }) {
     <div className="filter-bar">
       <select value={filters.method} onChange={(e) => set("method", e.target.value)}>
         <option value="">All methods</option>
-        <option value="GET">GET</option>
-        <option value="POST">POST</option>
+        {METHODS.map((method) => (
+          <option key={method} value={method}>{method}</option>
+        ))}
       </select>
 
       <input

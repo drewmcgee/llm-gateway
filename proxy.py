@@ -11,6 +11,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from functools import partial
+from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -42,10 +43,27 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+# "authorization" matters here: the caller now presents the gateway key in that
+# header, and Starlette gives us lowercase names, so leaving it in would send
+# BOTH the caller's key and ours upstream (httpx keeps both -- they differ only
+# by case in the dict we build).
 STRIP_REQ = {"host", "content-length", "connection", "transfer-encoding",
-             "keep-alive", "upgrade", "accept-encoding", "x-api-key"}
+             "keep-alive", "upgrade", "accept-encoding", "x-api-key",
+             "authorization"}
 STRIP_RESP = {"content-length", "connection", "transfer-encoding",
               "keep-alive", "upgrade", "content-encoding"}
+
+# Every method the spec asks us to intercept. GET/DELETE reach the management
+# endpoints (models, files, batches); PUT/PATCH and the rest are forwarded so
+# the gateway stays transparent as the upstream API grows.
+PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+
+
+def upstream_url(path, query):
+    # GET endpoints carry their arguments in the query string, so dropping it
+    # would silently change the request (e.g. GET /v1/files?purpose=assistants).
+    url = f"{ENDPOINT}/v1/{path}"
+    return f"{url}?{query}" if query else url
 
 
 async def log_request(status_code, body, ttfb_ms, total_ms):
@@ -62,18 +80,66 @@ def extract_model(request_body):
         return None
 
 
+def _first_present(usage, *names):
+    # Not `a or b`: a legitimate count of 0 must not fall through to the alias.
+    for name in names:
+        value = usage.get(name)
+        if value is not None:
+            return value
+    return None
+
+
+def _usage_object(document):
+    if not isinstance(document, dict):
+        return None
+    usage = document.get("usage")
+    if usage is None:
+        # Responses API stream frames nest the response object one level down.
+        response = document.get("response")
+        if isinstance(response, dict):
+            usage = response.get("usage")
+    return usage if isinstance(usage, dict) else None
+
+
+def _iter_sse_payloads(response_body):
+    for line in response_body.split(b"\n"):
+        if line.startswith(b"data:"):
+            payload = line[len(b"data:"):].strip()
+            if payload and payload != b"[DONE]":
+                yield payload
+
+
+def _find_usage(response_body):
+    # Buffered responses are a single JSON document.
+    try:
+        return _usage_object(json.loads(response_body))
+    except ValueError:
+        pass
+    # Streamed responses are SSE frames. Usage rides on the terminal frame
+    # (`response.completed`, or the final chunk under stream_options), so scan
+    # backwards and stop at the first frame that carries it.
+    for payload in reversed(list(_iter_sse_payloads(response_body))):
+        try:
+            usage = _usage_object(json.loads(payload))
+        except ValueError:
+            continue
+        if usage:
+            return usage
+    return None
+
+
 def extract_usage(response_body):
     if not response_body:
         return None
-    try:
-        usage = json.loads(response_body).get("usage")
-    except ValueError:
-        return None
+    usage = _find_usage(response_body)
     if not usage:
         return None
+    # Chat Completions reports prompt_tokens/completion_tokens; the Responses
+    # API reports the same two counts as input_tokens/output_tokens. Embeddings
+    # report a prompt count and no completion count at all.
     return {
-        "prompt_tokens": usage.get("prompt_tokens"),
-        "completion_tokens": usage.get("completion_tokens"),
+        "prompt_tokens": _first_present(usage, "prompt_tokens", "input_tokens"),
+        "completion_tokens": _first_present(usage, "completion_tokens", "output_tokens"),
         "total_tokens": usage.get("total_tokens"),
     }
 
@@ -96,12 +162,39 @@ async def log_rejected_request(request, reason):
     ))
 
 
-async def require_api_key(request: Request, x_api_key: str | None = Header(None, alias="X-API-Key")):
-    if not x_api_key:
-        await log_rejected_request(request, "missing X-API-Key header")
-        raise HTTPException(status_code=401, detail="missing X-API-Key header")
+MISSING_CREDENTIALS = ("missing credentials: send X-API-Key, or "
+                       "Authorization: Bearer <gateway key>")
+
+
+def presented_key(x_api_key, authorization):
+    """The gateway key the caller presented, from either supported header.
+
+    `X-API-Key` is the gateway's own scheme. `Authorization: Bearer` is also
+    accepted so an OpenAI SDK works against the gateway with nothing but
+    base_url changed -- the credential is a gateway key either way, and it is
+    stripped before the request is forwarded upstream.
+    """
+    if x_api_key:
+        return x_api_key
+    if authorization:
+        scheme, _, credential = authorization.partition(" ")
+        if scheme.lower() == "bearer":
+            return credential.strip() or None
+    return None
+
+
+# Annotated form (rather than `= Header(None)`) so the Python default is a real
+# None: these stay callable directly, outside FastAPI's dependency injection.
+async def require_api_key(
+        request: Request,
+        x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
+        authorization: Annotated[str | None, Header()] = None):
+    key = presented_key(x_api_key, authorization)
+    if not key:
+        await log_rejected_request(request, MISSING_CREDENTIALS)
+        raise HTTPException(status_code=401, detail=MISSING_CREDENTIALS)
     label = await db_module.get_api_key_label(
-        request.app.state.keys_db, db_module.hash_key(x_api_key))
+        request.app.state.keys_db, db_module.hash_key(key))
     if label is None:
         await log_rejected_request(request, "invalid API key")
         raise HTTPException(status_code=401, detail="invalid API key")
@@ -147,7 +240,7 @@ async def body_iterator(upstream, start, ttfb_ms, on_complete=log_request):
         await on_complete(upstream.status_code, b"".join(chunks), ttfb_ms, total_ms)
 
 
-@app.post("/v1/{path:path}")
+@app.api_route("/v1/{path:path}", methods=PROXY_METHODS)
 async def proxy(path: str, request: Request, api_key_label: str = Depends(require_api_key)):
     body = await request.body()
     headers = {k: v for k, v in request.headers.items()
@@ -157,9 +250,11 @@ async def proxy(path: str, request: Request, api_key_label: str = Depends(requir
     client = request.app.state.client
     start = time.perf_counter()
 
-    upstream_req = client.build_request("POST",
-                                        f"{ENDPOINT}/v1/{path}",
-                                        content=body,
+    upstream_req = client.build_request(request.method,
+                                        upstream_url(path, request.url.query),
+                                        # Bodyless methods must stay bodyless:
+                                        # content=b"" would add content-length: 0.
+                                        content=body or None,
                                         headers=headers
                                         )
 

@@ -148,3 +148,76 @@ async def test_valid_key_does_not_log_anything_itself(tmp_path):
         await conn.close()
 
     assert log_client.sent == []
+
+
+# --- Authorization: Bearer, so OpenAI SDKs work unchanged ------------------
+
+@pytest.mark.asyncio
+async def test_accepts_the_gateway_key_as_a_bearer_token(tmp_path):
+    conn = await db.connect_keys(tmp_path / "keys.db")
+    try:
+        raw_key = await db.create_api_key(conn, "sdk-user")
+        label = await require_api_key(
+            fake_request(conn), x_api_key=None,
+            authorization=f"Bearer {raw_key}")
+    finally:
+        await conn.close()
+
+    assert label == "sdk-user"
+
+
+@pytest.mark.asyncio
+async def test_bearer_scheme_is_case_insensitive(tmp_path):
+    conn = await db.connect_keys(tmp_path / "keys.db")
+    try:
+        raw_key = await db.create_api_key(conn, "sdk-user")
+        label = await require_api_key(
+            fake_request(conn), x_api_key=None,
+            authorization=f"bearer {raw_key}")
+    finally:
+        await conn.close()
+
+    assert label == "sdk-user"
+
+
+@pytest.mark.asyncio
+async def test_x_api_key_wins_when_both_headers_are_present(tmp_path):
+    conn = await db.connect_keys(tmp_path / "keys.db")
+    try:
+        raw_key = await db.create_api_key(conn, "header-user")
+        label = await require_api_key(
+            fake_request(conn), x_api_key=raw_key,
+            authorization="Bearer gw_some-other-key")
+    finally:
+        await conn.close()
+
+    assert label == "header-user"
+
+
+@pytest.mark.asyncio
+async def test_rejects_an_unknown_bearer_token(tmp_path):
+    conn = await db.connect_keys(tmp_path / "keys.db")
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            await require_api_key(fake_request(conn), x_api_key=None,
+                                  authorization="Bearer sk-a-real-openai-key")
+    finally:
+        await conn.close()
+
+    assert exc_info.value.status_code == 401
+
+
+@pytest.mark.parametrize("header", ["Basic dXNlcjpwYXNz", "Bearer", "Bearer   ",
+                                     "gw_no-scheme-at-all", ""])
+@pytest.mark.asyncio
+async def test_rejects_authorization_headers_that_carry_no_bearer_key(tmp_path, header):
+    conn = await db.connect_keys(tmp_path / "keys.db")
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            await require_api_key(fake_request(conn), x_api_key=None,
+                                  authorization=header)
+    finally:
+        await conn.close()
+
+    assert exc_info.value.status_code == 401
+    assert "missing credentials" in exc_info.value.detail
