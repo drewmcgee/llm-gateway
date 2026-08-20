@@ -71,6 +71,66 @@ async def test_insert_log_allows_null_bodies(tmp_path):
     assert row == (None, None)
 
 
+def test_hash_key_is_deterministic():
+    assert db.hash_key("gw_abc123") == db.hash_key("gw_abc123")
+
+
+def test_hash_key_differs_for_different_keys():
+    assert db.hash_key("gw_abc123") != db.hash_key("gw_abc124")
+
+
+def test_hash_key_does_not_return_the_raw_key():
+    assert db.hash_key("gw_abc123") != "gw_abc123"
+
+
+@pytest.mark.asyncio
+async def test_create_api_key_returns_prefixed_raw_key(tmp_path):
+    conn = await db.connect(tmp_path / "logs.db")
+    try:
+        raw_key = await db.create_api_key(conn, "demo-user")
+    finally:
+        await conn.close()
+
+    assert raw_key.startswith("gw_")
+
+
+@pytest.mark.asyncio
+async def test_create_api_key_stores_hash_not_plaintext(tmp_path):
+    conn = await db.connect(tmp_path / "logs.db")
+    try:
+        raw_key = await db.create_api_key(conn, "demo-user")
+        cursor = await conn.execute("SELECT key_hash FROM api_keys")
+        row = await cursor.fetchone()
+    finally:
+        await conn.close()
+
+    assert row[0] != raw_key
+    assert row[0] == db.hash_key(raw_key)
+
+
+@pytest.mark.asyncio
+async def test_get_api_key_label_returns_label_for_known_key(tmp_path):
+    conn = await db.connect(tmp_path / "logs.db")
+    try:
+        raw_key = await db.create_api_key(conn, "demo-user")
+        label = await db.get_api_key_label(conn, db.hash_key(raw_key))
+    finally:
+        await conn.close()
+
+    assert label == "demo-user"
+
+
+@pytest.mark.asyncio
+async def test_get_api_key_label_returns_none_for_unknown_key(tmp_path):
+    conn = await db.connect(tmp_path / "logs.db")
+    try:
+        label = await db.get_api_key_label(conn, db.hash_key("gw_never-issued"))
+    finally:
+        await conn.close()
+
+    assert label is None
+
+
 @pytest.mark.asyncio
 async def test_connect_creates_table_idempotently(tmp_path):
     path = tmp_path / "logs.db"
