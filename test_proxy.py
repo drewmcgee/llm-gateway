@@ -285,6 +285,29 @@ async def test_unauthenticated_get_is_rejected_and_logged(tmp_path):
     assert log_client.sent[0]["source"] == "gateway"
 
 
+@pytest.mark.asyncio
+async def test_unreachable_upstream_returns_502_and_is_logged(tmp_path):
+    """If OpenAI never answers, the caller gets a clear 502 -- not a bare
+    500 -- and the attempt is logged as gateway-authored, same as a 401."""
+    def unreachable(request):
+        raise httpx.ConnectError("connection refused")
+
+    async with gateway(tmp_path, unreachable) as (
+            client, raw_key, _, log_client):
+        response = await client.post(
+            "/v1/chat/completions",
+            headers={"X-API-Key": raw_key, "content-type": "application/json"},
+            content=b'{"model":"gpt-5-mini","messages":[]}')
+
+    assert response.status_code == 502
+    assert "upstream request failed" in response.json()["detail"]
+    record = log_client.sent[0]
+    assert record["status_code"] == 502
+    assert record["source"] == "gateway"
+    assert record["api_key_label"] == "test-key"
+    assert record["model"] == "gpt-5-mini"
+
+
 def test_upstream_url_omits_the_question_mark_without_a_query():
     assert upstream_url("models", "") == "https://api.openai.com/v1/models"
     assert upstream_url("models", "limit=5") == "https://api.openai.com/v1/models?limit=5"

@@ -102,7 +102,7 @@ export default function LogDetail({ logId }) {
         <dt>Status</dt>
         <dd>{log.status_code}</dd>
         <dt>Source</dt>
-        <dd>{log.source === "gateway" ? "Gateway (rejected before OpenAI)" : "OpenAI"}</dd>
+        <dd>{log.source === "gateway" ? "Gateway (never completed against OpenAI)" : "OpenAI"}</dd>
         <dt>TTFB</dt>
         <dd>{Math.round(log.ttfb_ms)} ms</dd>
         <dt>Total</dt>

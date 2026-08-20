@@ -144,20 +144,25 @@ def extract_usage(response_body):
     }
 
 
-async def log_rejected_request(request, reason):
+async def log_gateway_response(request, status_code, reason, *,
+                               total_ms=0.0, api_key_label=None):
+    """Log a response the gateway authored itself -- an auth rejection or an
+    upstream failure. source="gateway" tells the dashboard the request never
+    completed against OpenAI."""
     body = await request.body()
     request.app.state.log_client.send(build_record(
         created_at=datetime.now(timezone.utc).isoformat(),
         method=request.method,
         url=str(request.url),
-        status_code=401,
+        status_code=status_code,
         ttfb_ms=0.0,
-        total_ms=0.0,
+        total_ms=total_ms,
         request_headers=dict(request.headers),
         request_body=body,
         response_headers={},
         response_body=json.dumps({"detail": reason}).encode(),
         source="gateway",
+        api_key_label=api_key_label,
         model=extract_model(body),
     ))
 
@@ -191,12 +196,12 @@ async def require_api_key(
         authorization: Annotated[str | None, Header()] = None):
     key = presented_key(x_api_key, authorization)
     if not key:
-        await log_rejected_request(request, MISSING_CREDENTIALS)
+        await log_gateway_response(request, 401, MISSING_CREDENTIALS)
         raise HTTPException(status_code=401, detail=MISSING_CREDENTIALS)
     label = await db_module.get_api_key_label(
         request.app.state.keys_db, db_module.hash_key(key))
     if label is None:
-        await log_rejected_request(request, "invalid API key")
+        await log_gateway_response(request, 401, "invalid API key")
         raise HTTPException(status_code=401, detail="invalid API key")
     return label
 
@@ -258,7 +263,18 @@ async def proxy(path: str, request: Request, api_key_label: str = Depends(requir
                                         headers=headers
                                         )
 
-    upstream = await client.send(upstream_req, stream=True)
+    try:
+        upstream = await client.send(upstream_req, stream=True)
+    except httpx.RequestError as exc:
+        # The upstream never answered (unreachable, DNS failure, connect
+        # timeout), so there is no response to proxy. Answer 502 and log it
+        # like an auth rejection: authored by the gateway, not OpenAI.
+        total_ms = (time.perf_counter() - start) * 1000
+        reason = f"upstream request failed: {exc!r}"
+        await log_gateway_response(request, 502, reason,
+                                   total_ms=total_ms,
+                                   api_key_label=api_key_label)
+        raise HTTPException(status_code=502, detail=reason)
     ttfb_ms = (time.perf_counter() - start) * 1000
 
     response_headers = {

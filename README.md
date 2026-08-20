@@ -35,6 +35,18 @@ live SSE feed the dashboard subscribes to. `POST /logs` is the ingest endpoint.
 
 **`dashboard/`** — Vite + React, reads from the backend on 8001.
 
+### Language choice
+
+The assignment prefers TypeScript for the backend. I chose Python because
+FastAPI + httpx + asyncio is a robust, production-proven stack for exactly this
+shape of service — an async streaming proxy with typed wire formats (Pydantic
+validates the log record schema in `backend.py`) — and it's the language where
+I write my strongest async server code. Well-designed, well-tested code in my
+best language seemed like a better signal than passable TypeScript; the React
+dashboard covers the JavaScript half. The architecture itself is
+language-agnostic: the port maps one-to-one onto Fastify + fetch streams, with
+`asyncio.create_task` becoming an un-awaited Promise.
+
 ### Why the logging is decoupled
 
 The proxy never awaits the log write. `LogClient.send()` schedules the POST with
@@ -129,18 +141,52 @@ uvicorn proxy:app   --port 8000 --reload    # gateway
 cd dashboard && npm install && npm run dev  # http://localhost:5173
 ```
 
-Issue yourself a gateway key, then call the proxy with it:
+Then walk the demo below. `python seed_logs.py 250` fills `logs.db` with
+synthetic rows if you want the dashboard populated without spending tokens.
 
-```bash
-python create_key.py my-app          # prints the raw key once; only the hash is stored
+## Demo: login + request inspection
 
-curl http://localhost:8000/v1/chat/completions \
-  -H "X-API-Key: gw_..." -H "content-type: application/json" \
-  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}'
-```
+The full flow, from issuing a credential to inspecting a streamed response.
+Have all three processes running and the dashboard open at
+`http://localhost:5173`.
 
-`python seed_logs.py 250` fills `logs.db` with synthetic rows if you want the
-dashboard populated without spending tokens.
+1. **Log in** — issue yourself a gateway key:
+
+   ```bash
+   python create_key.py demo-user    # prints gw_... once; only the hash is stored
+   ```
+
+2. **Watch auth fail first.** Call the proxy with no key:
+
+   ```bash
+   curl http://localhost:8000/v1/models
+   ```
+
+   A 401 appears in the dashboard tagged with a **GATEWAY** pill — the request
+   was rejected by the gateway and never reached OpenAI. Click it: the logged
+   response body names both accepted auth schemes, and the attempted
+   credentials (if any) show as `REDACTED`.
+
+3. **Make a real streamed call:**
+
+   ```bash
+   curl -sN http://localhost:8000/v1/responses \
+     -H "X-API-Key: gw_..." -H "content-type: application/json" \
+     -d '{"model":"gpt-5-mini","input":"write a haiku","stream":true}'
+   ```
+
+   The row arrives live (click the *new requests* banner), attributed to
+   `demo-user`, with TTFB, total duration, and token counts.
+
+4. **Inspect it.** Click the row: full request/response headers and bodies.
+   The streamed body renders as an event summary plus the reconstructed output
+   text, with the raw SSE frames one click away.
+
+5. **Filter.** Narrow the table by method, status code, or URL substring.
+
+If OpenAI is unreachable (disconnect your network and repeat step 3), the
+gateway answers 502 and logs that too — also tagged **GATEWAY**, because the
+failure happened before any upstream response existed.
 
 ### Authentication
 
@@ -183,3 +229,20 @@ pytest
 that `send()` returns before the backend is even contacted, that a stream
 finishes while its log post is still in flight, and that a dead backend never
 surfaces to the client.
+
+## AI-assisted development
+
+AI tools were part of the workflow, with a deliberate division of labor: I
+decided what to build and how it should behave; AI helped build it faster.
+
+- **Design decisions** — I discussed the architecture and its tradeoffs (the
+  proxy/backend process split, fire-and-forget logging, drop-oldest
+  backpressure, hashing keys with SHA-256 rather than a slow KDF) with
+  state-of-the-art reasoning models before committing to them. The decisions
+  and their written rationale — in this README and in code comments — are mine
+  to defend.
+- **Implementation** — infrastructure and application code was AI-assisted,
+  written against functionality I specified and reviewed before it landed.
+- **Boilerplate and tests** — coding agents produced scaffolding and the bulk
+  of the test suite quickly; the behaviors under test and the coverage targets
+  (121 tests, including the timing-sensitive async paths) were mine.

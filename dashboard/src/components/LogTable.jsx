@@ -44,7 +44,7 @@ export default function LogTable({ logs, selectedId, onSelect, hasMore, onLoadOl
                   {log.status_code}
                 </span>
                 {log.source === "gateway" && (
-                  <span className="source-badge" title="Rejected by the gateway before reaching OpenAI">
+                  <span className="source-badge" title="Response authored by the gateway (auth rejection or upstream failure) — never completed against OpenAI">
                     GATEWAY
                   </span>
                 )}
