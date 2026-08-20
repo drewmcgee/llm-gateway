@@ -41,6 +41,11 @@ export default function LogTable({ logs, selectedId, onSelect }) {
                 <span className={`status-badge ${statusClass(log.status_code)}`}>
                   {log.status_code}
                 </span>
+                {log.source === "gateway" && (
+                  <span className="source-badge" title="Rejected by the gateway before reaching OpenAI">
+                    GATEWAY
+                  </span>
+                )}
               </td>
               <td>{Math.round(log.total_ms)} ms</td>
               <td>{log.api_key_label ?? "—"}</td>

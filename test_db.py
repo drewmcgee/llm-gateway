@@ -17,6 +17,7 @@ async def insert_sample_log(conn, **overrides):
         response_body=b'{"id": "chatcmpl-1"}',
         ttfb_ms=12.5,
         total_ms=345.0,
+        source="upstream",
     )
     fields.update(overrides)
     return await db.insert_log(conn, **fields)
@@ -210,6 +211,56 @@ async def test_model_and_tokens_default_to_none(tmp_path):
 
     assert row["model"] is None
     assert row["total_tokens"] is None
+
+
+@pytest.mark.asyncio
+async def test_list_logs_includes_source(tmp_path):
+    conn = await db.connect(tmp_path / "logs.db")
+    try:
+        await insert_sample_log(conn, source="gateway")
+        rows = await db.list_logs(conn)
+    finally:
+        await conn.close()
+
+    assert rows[0]["source"] == "gateway"
+
+
+@pytest.mark.asyncio
+async def test_get_log_includes_source(tmp_path):
+    conn = await db.connect(tmp_path / "logs.db")
+    try:
+        log_id = await insert_sample_log(conn, source="gateway")
+        row = await db.get_log(conn, log_id)
+    finally:
+        await conn.close()
+
+    assert row["source"] == "gateway"
+
+
+@pytest.mark.asyncio
+async def test_insert_log_rejects_unrecognized_source(tmp_path):
+    conn = await db.connect(tmp_path / "logs.db")
+    try:
+        with pytest.raises(Exception):
+            await insert_sample_log(conn, source="something-else")
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_insert_log_requires_source(tmp_path):
+    conn = await db.connect(tmp_path / "logs.db")
+    try:
+        with pytest.raises(TypeError):
+            fields = dict(
+                created_at="2026-08-19T12:00:00+00:00", method="POST",
+                url="http://x/v1/y", request_headers={}, request_body=None,
+                status_code=200, response_headers={}, response_body=None,
+                ttfb_ms=1.0, total_ms=2.0,
+            )
+            await db.insert_log(conn, **fields)
+    finally:
+        await conn.close()
 
 
 @pytest.mark.asyncio

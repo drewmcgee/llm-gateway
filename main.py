@@ -77,22 +77,11 @@ def extract_usage(response_body):
     }
 
 
-async def require_api_key(request: Request, x_api_key: str | None = Header(None, alias="X-API-Key")):
-    if not x_api_key:
-        raise HTTPException(status_code=401, detail="missing X-API-Key header")
-    label = await db_module.get_api_key_label(
-        request.app.state.db, db_module.hash_key(x_api_key))
-    if label is None:
-        raise HTTPException(status_code=401, detail="invalid API key")
-    return label
-
-
-async def persist_log(status_code, body, ttfb_ms, total_ms, *, db, method,
-                       url, request_headers, request_body, response_headers,
-                       api_key_label=None, broadcaster=None):
-    created_at = datetime.now(timezone.utc).isoformat()
-    model = extract_model(request_body)
-    usage = extract_usage(body) or {}
+async def write_log(db, broadcaster, *, created_at, method, url, status_code,
+                     ttfb_ms, total_ms, request_headers, request_body,
+                     response_headers, response_body, source, api_key_label=None,
+                     model=None, prompt_tokens=None, completion_tokens=None,
+                     total_tokens=None):
     log_id = await db_module.insert_log(
         db,
         created_at=created_at,
@@ -102,14 +91,15 @@ async def persist_log(status_code, body, ttfb_ms, total_ms, *, db, method,
         request_body=request_body,
         status_code=status_code,
         response_headers=response_headers,
-        response_body=body,
+        response_body=response_body,
         ttfb_ms=ttfb_ms,
         total_ms=total_ms,
+        source=source,
         api_key_label=api_key_label,
         model=model,
-        prompt_tokens=usage.get("prompt_tokens"),
-        completion_tokens=usage.get("completion_tokens"),
-        total_tokens=usage.get("total_tokens"),
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
     )
     if broadcaster is not None:
         broadcaster.publish({
@@ -120,12 +110,73 @@ async def persist_log(status_code, body, ttfb_ms, total_ms, *, db, method,
             "status_code": status_code,
             "ttfb_ms": ttfb_ms,
             "total_ms": total_ms,
+            "source": source,
             "api_key_label": api_key_label,
             "model": model,
-            "prompt_tokens": usage.get("prompt_tokens"),
-            "completion_tokens": usage.get("completion_tokens"),
-            "total_tokens": usage.get("total_tokens"),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
         })
+    return log_id
+
+
+async def log_rejected_request(request, reason):
+    body = await request.body()
+    await write_log(
+        request.app.state.db,
+        request.app.state.broadcaster,
+        created_at=datetime.now(timezone.utc).isoformat(),
+        method=request.method,
+        url=str(request.url),
+        status_code=401,
+        ttfb_ms=0.0,
+        total_ms=0.0,
+        request_headers=dict(request.headers),
+        request_body=body,
+        response_headers={},
+        response_body=json.dumps({"detail": reason}).encode(),
+        source="gateway",
+        model=extract_model(body),
+    )
+
+
+async def require_api_key(request: Request, x_api_key: str | None = Header(None, alias="X-API-Key")):
+    if not x_api_key:
+        await log_rejected_request(request, "missing X-API-Key header")
+        raise HTTPException(status_code=401, detail="missing X-API-Key header")
+    label = await db_module.get_api_key_label(
+        request.app.state.db, db_module.hash_key(x_api_key))
+    if label is None:
+        await log_rejected_request(request, "invalid API key")
+        raise HTTPException(status_code=401, detail="invalid API key")
+    return label
+
+
+async def persist_log(status_code, body, ttfb_ms, total_ms, *, db, method,
+                       url, request_headers, request_body, response_headers,
+                       api_key_label=None, broadcaster=None):
+    model = extract_model(request_body)
+    usage = extract_usage(body) or {}
+    await write_log(
+        db,
+        broadcaster,
+        created_at=datetime.now(timezone.utc).isoformat(),
+        method=method,
+        url=url,
+        status_code=status_code,
+        ttfb_ms=ttfb_ms,
+        total_ms=total_ms,
+        request_headers=request_headers,
+        request_body=request_body,
+        response_headers=response_headers,
+        response_body=body,
+        source="upstream",
+        api_key_label=api_key_label,
+        model=model,
+        prompt_tokens=usage.get("prompt_tokens"),
+        completion_tokens=usage.get("completion_tokens"),
+        total_tokens=usage.get("total_tokens"),
+    )
 
 
 async def body_iterator(upstream, start, ttfb_ms, on_complete=log_request):

@@ -44,12 +44,18 @@ export default function LogDetail({ logId }) {
       <dl className="detail-meta">
         <dt>Status</dt>
         <dd>{log.status_code}</dd>
+        <dt>Source</dt>
+        <dd>{log.source === "gateway" ? "Gateway (rejected before OpenAI)" : "OpenAI"}</dd>
         <dt>TTFB</dt>
         <dd>{Math.round(log.ttfb_ms)} ms</dd>
         <dt>Total</dt>
         <dd>{Math.round(log.total_ms)} ms</dd>
         <dt>API key</dt>
         <dd>{log.api_key_label ?? "—"}</dd>
+        <dt>Model</dt>
+        <dd>{log.model ?? "—"}</dd>
+        <dt>Tokens</dt>
+        <dd>{log.total_tokens != null ? `${log.total_tokens} (${log.prompt_tokens} prompt / ${log.completion_tokens} completion)` : "—"}</dd>
         <dt>Time</dt>
         <dd>{new Date(log.created_at).toLocaleString()}</dd>
       </dl>
