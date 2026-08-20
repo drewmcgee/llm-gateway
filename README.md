@@ -25,9 +25,9 @@ client ──POST /v1/*──►  proxy.py  :8000  ──►  api.openai.com
 response straight through to the client. It owns `keys.db`.
 
 It intercepts every HTTP method — `GET, POST, PUT, PATCH, DELETE, HEAD,
-OPTIONS` — not just `POST`, so management endpoints (`GET /v1/models`,
-`DELETE /v1/files/{id}`) proxy and log like anything else. The verb is
-forwarded as sent rather than rewritten, and the query string travels with it.
+OPTIONS` so management endpoints (`GET /v1/models`,
+`DELETE /v1/files/{id}`) proxy and log like anything else. The request method is
+forwarded as sent rather than rewritten, and the query string is included.
 
 **`backend.py` (port 8001)** — the logging service. Owns `logs.db` and
 everything that reads from it: paginated history, per-request detail, and the
@@ -80,7 +80,7 @@ Have all three processes running and the dashboard open at
      -d '{"model":"gpt-5-mini","input":"write a haiku","stream":true}'
    ```
 
-   The row arrives live (click the *new requests* banner), attributed to
+   The row arrives live (click the _new requests_ banner), attributed to
    `demo-user`, with TTFB, total duration, and token counts.
 
 4. **Inspect it.** Click the row: full request/response headers and bodies.
@@ -109,13 +109,16 @@ surfaces to the client.
 
 AI tools were part of the workflow, with a deliberate division of labor: I
 decided what to build and how it should behave; AI helped build it faster.
+I did extensive E2E manual testing with curl commands and dashboard interaction
+to ensure that the UX was intuitive and dependable.
 
 - **Design decisions** — I discussed the architecture and its tradeoffs (the
   proxy/backend process split, fire-and-forget logging, drop-oldest
   backpressure, hashing keys with SHA-256 rather than a slow KDF) with
   state-of-the-art reasoning models before committing to them. The decisions
-  and their written rationale — in this README and in code comments — are mine
-  to defend.
+  and their written rationale are mine. I also looked at similar products on the web,
+  like Helicone to see what features and architectural principles gateways use.
+
 - **Implementation** — infrastructure and application code was AI-assisted,
   written against functionality I specified and reviewed before it landed.
 - **Boilerplate and tests** — coding agents produced scaffolding and the bulk
@@ -162,15 +165,15 @@ request, not by the gateway:
 - **`"stream": true`** — OpenAI sends response headers immediately and emits
   SSE frames as tokens are produced. The proxy forwards each chunk as it
   arrives, so the caller sees output while the model is still working.
-- **No `stream` flag (the default)** — OpenAI generates the *entire* response
+- **No `stream` flag (the default)** — OpenAI generates the _entire_ response
   before sending anything, then returns it as one JSON document.
 
 This is the single biggest influence on the timings in the dashboard, because
 `ttfb_ms` measures time until the upstream **response headers** arrive:
 
-| Request | TTFB | Total |
-| --- | --- | --- |
-| `"stream": true` | a fraction of total — first token | full generation |
+| Request            | TTFB                                      | Total           |
+| ------------------ | ----------------------------------------- | --------------- |
+| `"stream": true`   | a fraction of total — first token         | full generation |
 | default (buffered) | ≈ total — headers wait for the last token | full generation |
 
 So a buffered request showing `TTFB 5140 ms / Total 5182 ms` is not a stall:
@@ -219,10 +222,10 @@ side, before anything leaves the process.
 The gateway accepts its own key two ways, so it is drop-in for existing OpenAI
 clients:
 
-| Header | For |
-| --- | --- |
-| `X-API-Key: gw_...` | curl, and anything speaking the gateway's own scheme |
-| `Authorization: Bearer gw_...` | the OpenAI SDKs, unchanged |
+| Header                         | For                                                  |
+| ------------------------------ | ---------------------------------------------------- |
+| `X-API-Key: gw_...`            | curl, and anything speaking the gateway's own scheme |
+| `Authorization: Bearer gw_...` | the OpenAI SDKs, unchanged                           |
 
 `X-API-Key` wins if both are present. Either way the caller's credential is
 **stripped** before the request is forwarded — the proxy substitutes the real
@@ -244,5 +247,3 @@ with client.responses.stream(model="gpt-5-mini", input="write an essay") as stre
 The gateway forwards SSE frames through byte-for-byte and in real time, so
 streaming clients reconstruct output exactly as they would against
 `api.openai.com` — the gateway never buffers a response to inspect it.
-
-
